@@ -4,6 +4,7 @@ from sqlalchemy import String
 from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
 from sqlalchemy import BigInteger
+from sqlalchemy import Boolean
 
 from sqlalchemy.orm import relationship
 
@@ -96,3 +97,29 @@ class Flow(Base):
     first_seen = Column(DateTime)
 
     last_seen = Column(DateTime)
+
+    src_is_internal = Column(
+        Boolean,
+        default=False
+    )
+
+    dst_is_internal = Column(
+        Boolean,
+        default=False
+    )
+
+    src_asn = Column(String)
+
+    src_org = Column(String)
+
+    src_country = Column(String)
+
+    src_rdns = Column(String)
+
+    dst_asn = Column(String)
+
+    dst_org = Column(String)
+
+    dst_country = Column(String)
+
+    dst_rdns = Column(String)

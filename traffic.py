@@ -13,6 +13,8 @@ from scapy.layers.inet import IP
 from scapy.layers.inet import TCP
 from scapy.layers.inet import UDP
 
+from ipwhois import IPWhois
+
 from models import Flow
 
 from database import Base
@@ -87,6 +89,106 @@ def classify_direction(src_ip, dst_ip):
     except Exception:
 
         return "UNKNOWN"
+
+
+#
+# IP Helpers
+#
+
+def is_internal_ip(ip):
+
+    try:
+
+        return (
+            ipaddress.ip_address(ip)
+            in LOCAL_NETWORK
+        )
+
+    except Exception:
+
+        return False
+
+
+def normalize_ip(ip):
+
+    #
+    # Internal IPs are hashed
+    # External IPs remain raw for enrichment
+    #
+
+    if is_internal_ip(ip):
+
+        return hash_value(ip)
+
+    return ip
+
+
+#
+# Enrichment Helpers
+#
+
+def enrich_ip(ip):
+
+    enrichment = {
+
+        "asn": None,
+
+        "org": None,
+
+        "country": None,
+
+        "rdns": None
+    }
+
+    #
+    # Skip enrichment for internal IPs
+    #
+
+    if is_internal_ip(ip):
+
+        return enrichment
+
+    #
+    # ASN / Organization / Country Lookup
+    #
+
+    try:
+
+        result = IPWhois(ip).lookup_rdap()
+
+        enrichment["asn"] = (
+            result.get("asn")
+        )
+
+        enrichment["org"] = (
+            result.get("network", {})
+            .get("name")
+        )
+
+        enrichment["country"] = (
+            result.get("network", {})
+            .get("country")
+        )
+
+    except Exception:
+
+        pass
+
+    #
+    # Reverse DNS
+    #
+
+    try:
+
+        rdns = socket.gethostbyaddr(ip)[0]
+
+        enrichment["rdns"] = rdns
+
+    except Exception:
+
+        pass
+
+    return enrichment
 
 
 #
@@ -170,6 +272,10 @@ def save_flow(flow):
 
     record = Flow(
 
+        #
+        # Core Flow Metadata
+        #
+
         src_ip=flow["src_ip"],
 
         dst_ip=flow["dst_ip"],
@@ -186,7 +292,39 @@ def save_flow(flow):
 
         first_seen=flow["first_seen"],
 
-        last_seen=flow["last_seen"]
+        last_seen=flow["last_seen"],
+
+        #
+        # Internal / External Classification
+        #
+
+        src_is_internal=flow["src_is_internal"],
+
+        dst_is_internal=flow["dst_is_internal"],
+
+        #
+        # Source Enrichment
+        #
+
+        src_asn=flow["src_asn"],
+
+        src_org=flow["src_org"],
+
+        src_country=flow["src_country"],
+
+        src_rdns=flow["src_rdns"],
+
+        #
+        # Destination Enrichment
+        #
+
+        dst_asn=flow["dst_asn"],
+
+        dst_org=flow["dst_org"],
+
+        dst_country=flow["dst_country"],
+
+        dst_rdns=flow["dst_rdns"]
     )
 
     db.add(record)
@@ -222,8 +360,37 @@ def process_packet(packet):
         dst_ip_raw
     )
 
-    src_ip = hash_value(src_ip_raw)
-    dst_ip = hash_value(dst_ip_raw)
+    #
+    # Internal / External Classification
+    #
+
+    src_is_internal = is_internal_ip(
+        src_ip_raw
+    )
+
+    dst_is_internal = is_internal_ip(
+        dst_ip_raw
+    )
+
+    #
+    # IP Normalization
+    #
+
+    src_ip = normalize_ip(src_ip_raw)
+
+    dst_ip = normalize_ip(dst_ip_raw)
+
+    #
+    # Enrichment
+    #
+
+    src_enrichment = enrich_ip(
+        src_ip_raw
+    )
+
+    dst_enrichment = enrich_ip(
+        dst_ip_raw
+    )
 
     protocol = get_protocol(packet)
 
@@ -276,6 +443,10 @@ def process_packet(packet):
 
         flows[flow_key] = {
 
+            #
+            # Core Flow Metadata
+            #
+
             "src_ip": src_ip,
 
             "dst_ip": dst_ip,
@@ -294,7 +465,39 @@ def process_packet(packet):
 
             "last_seen": now,
 
-            "last_seen_unix": now_unix
+            "last_seen_unix": now_unix,
+
+            #
+            # Internal / External Classification
+            #
+
+            "src_is_internal": src_is_internal,
+
+            "dst_is_internal": dst_is_internal,
+
+            #
+            # Source Enrichment
+            #
+
+            "src_asn": src_enrichment["asn"],
+
+            "src_org": src_enrichment["org"],
+
+            "src_country": src_enrichment["country"],
+
+            "src_rdns": src_enrichment["rdns"],
+
+            #
+            # Destination Enrichment
+            #
+
+            "dst_asn": dst_enrichment["asn"],
+
+            "dst_org": dst_enrichment["org"],
+
+            "dst_country": dst_enrichment["country"],
+
+            "dst_rdns": dst_enrichment["rdns"]
         }
 
     flow = flows[flow_key]
@@ -359,3 +562,4 @@ except KeyboardInterrupt:
     db.close()
 
     print("Done.")
+    
