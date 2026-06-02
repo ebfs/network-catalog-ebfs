@@ -82,6 +82,15 @@ except Exception:
     flows_df = pd.DataFrame()
 
 
+try:
+
+    dns_df = load_table("dns_records")
+
+except Exception:
+
+    dns_df = pd.DataFrame()
+
+
 #
 # Flow Enrichment
 #
@@ -133,7 +142,7 @@ st.caption(
 # Metrics Row
 #
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
 
@@ -157,6 +166,13 @@ with col3:
     )
 
 with col4:
+
+    st.metric(
+        "DNS Records",
+        len(dns_df)
+    )
+
+with col5:
 
     total_bytes = 0
 
@@ -216,6 +232,34 @@ if not services_df.empty:
 else:
 
     st.warning("No services data found.")
+
+
+st.divider()
+
+
+#
+# DNS Records Section
+#
+
+st.header("DNS Records")
+
+if not dns_df.empty:
+
+    recent_dns = dns_df.sort_values(
+        by="last_seen",
+        ascending=False
+    )
+
+    st.dataframe(
+        recent_dns.head(25),
+        width="stretch"
+    )
+
+else:
+
+    st.warning(
+        "No DNS records available."
+    )
 
 
 st.divider()
@@ -430,6 +474,70 @@ st.divider()
 
 
 #
+# Top Domains
+#
+
+st.header("Top Domains")
+
+if (
+    not flows_df.empty
+    and "dst_domain" in flows_df.columns
+):
+
+    domain_flows = flows_df[
+        flows_df["dst_domain"].notna()
+    ]
+
+    if not domain_flows.empty:
+
+        top_domains = (
+            domain_flows
+            .groupby("dst_domain")["byte_count"]
+            .sum()
+            .sort_values(ascending=False)
+            .head(10)
+            .reset_index()
+        )
+
+        top_domains.columns = [
+            "Domain",
+            "Total Bytes"
+        ]
+
+        fig_domains = px.bar(
+            top_domains,
+            x="Domain",
+            y="Total Bytes",
+            title="Top Domains by Traffic"
+        )
+
+        st.plotly_chart(
+            fig_domains,
+            width="stretch"
+        )
+
+        st.dataframe(
+            top_domains,
+            width="stretch"
+        )
+
+    else:
+
+        st.warning(
+            "No DNS-correlated flows available."
+        )
+
+else:
+
+    st.warning(
+        "No domain correlation data available."
+    )
+
+
+st.divider()
+
+
+#
 # Recent Flows
 #
 
@@ -445,6 +553,8 @@ if not flows_df.empty:
     recent_display = recent_flows[[
         "src_hostname",
         "dst_hostname",
+        "src_domain",
+        "dst_domain",
         "src_port",
         "dst_port",
         "protocol",
@@ -460,6 +570,8 @@ if not flows_df.empty:
     recent_display.columns = [
         "Source",
         "Destination",
+        "Source Domain",
+        "Destination Domain",
         "Source Port",
         "Destination Port",
         "Protocol",

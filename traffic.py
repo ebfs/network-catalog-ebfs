@@ -13,9 +13,13 @@ from scapy.layers.inet import IP
 from scapy.layers.inet import TCP
 from scapy.layers.inet import UDP
 
+from scapy.layers.dns import DNS
+from scapy.layers.dns import DNSRR
+
 from ipwhois import IPWhois
 
 from models import Flow
+from models import DNSRecord
 
 from database import Base
 from database import engine
@@ -40,6 +44,13 @@ db = SessionLocal()
 flows = {}
 
 FLOW_TIMEOUT = 60
+
+
+#
+# DNS Cache
+#
+
+dns_cache = {}
 
 
 #
@@ -127,7 +138,14 @@ def normalize_ip(ip):
 # Enrichment Helpers
 #
 
+enrichment_cache = {}
+
+
 def enrich_ip(ip):
+
+    #
+    # Default Structure
+    #
 
     enrichment = {
 
@@ -141,7 +159,7 @@ def enrich_ip(ip):
     }
 
     #
-    # Skip enrichment for internal IPs
+    # Skip internal IPs
     #
 
     if is_internal_ip(ip):
@@ -149,12 +167,22 @@ def enrich_ip(ip):
         return enrichment
 
     #
+    # Cache Hit
+    #
+
+    if ip in enrichment_cache:
+
+        return enrichment_cache[ip]
+
+    #
     # ASN / Organization / Country Lookup
     #
 
     try:
 
-        result = IPWhois(ip).lookup_rdap()
+        result = IPWhois(ip).lookup_rdap(
+            depth=1
+        )
 
         enrichment["asn"] = (
             result.get("asn")
@@ -188,7 +216,172 @@ def enrich_ip(ip):
 
         pass
 
+    #
+    # Store Cache
+    #
+
+    enrichment_cache[ip] = enrichment
+
     return enrichment
+
+
+#
+# DNS Processing
+#
+
+def process_dns(packet):
+
+    if not packet.haslayer(DNS):
+
+        return
+
+    dns = packet[DNS]
+
+    #
+    # Only process DNS responses
+    #
+
+    if dns.qr != 1:
+
+        return
+
+    #
+    # No answers
+    #
+
+    if dns.ancount == 0:
+
+        return
+
+    try:
+
+        for i in range(dns.ancount):
+
+            answer = dns.an[i]
+
+            #
+            # A Record
+            #
+
+            if answer.type != 1:
+
+                continue
+
+            domain = answer.rrname.decode(
+                errors="ignore"
+            ).rstrip(".")
+
+            resolved_ip = answer.rdata
+
+            ttl = answer.ttl
+
+            #
+            # Skip invalid entries
+            #
+
+            if not domain or not resolved_ip:
+
+                continue
+
+            #
+            # Duplicate suppression
+            #
+
+            cache_key = (
+                domain,
+                resolved_ip
+            )
+
+            now = datetime.now(UTC)
+
+            if cache_key in dns_cache:
+
+                record = dns_cache[cache_key]
+
+                record.last_seen = now
+
+                db.commit()
+
+                continue
+
+            #
+            # Existing DB Record
+            #
+
+            existing = db.query(DNSRecord).filter(
+                DNSRecord.domain == domain,
+                DNSRecord.ip == resolved_ip
+            ).first()
+
+            if existing:
+
+                existing.last_seen = now
+
+                dns_cache[cache_key] = existing
+
+                db.commit()
+
+                continue
+
+            #
+            # New DNS Record
+            #
+
+            record = DNSRecord(
+
+                domain=domain,
+
+                ip=resolved_ip,
+
+                record_type="A",
+
+                ttl=ttl,
+
+                first_seen=now,
+
+                last_seen=now
+            )
+
+            db.add(record)
+
+            db.commit()
+
+            dns_cache[cache_key] = record
+
+            print(
+                f"[DNS] "
+                f"{domain} -> {resolved_ip}"
+            )
+
+    except Exception:
+
+        pass
+
+
+#
+# DNS Correlation
+#
+
+def resolve_domain(ip):
+
+    try:
+
+        record = (
+            db.query(DNSRecord)
+            .filter(DNSRecord.ip == ip)
+            .order_by(DNSRecord.last_seen.desc())
+            .first()
+        )
+
+        if record:
+
+            return record.domain
+
+    except Exception:
+
+        pass
+
+    return None
 
 
 #
@@ -295,6 +488,14 @@ def save_flow(flow):
         last_seen=flow["last_seen"],
 
         #
+        # DNS Correlation
+        #
+
+        src_domain=flow["src_domain"],
+
+        dst_domain=flow["dst_domain"],
+
+        #
         # Internal / External Classification
         #
 
@@ -348,6 +549,12 @@ def save_flow(flow):
 
 def process_packet(packet):
 
+    #
+    # DNS Processing
+    #
+
+    process_dns(packet)
+
     if not packet.haslayer(IP):
 
         return
@@ -379,6 +586,25 @@ def process_packet(packet):
     src_ip = normalize_ip(src_ip_raw)
 
     dst_ip = normalize_ip(dst_ip_raw)
+
+    #
+    # DNS Correlation
+    #
+
+    src_domain = None
+    dst_domain = None
+
+    if not src_is_internal:
+
+        src_domain = resolve_domain(
+            src_ip_raw
+        )
+
+    if not dst_is_internal:
+
+        dst_domain = resolve_domain(
+            dst_ip_raw
+        )
 
     #
     # Enrichment
@@ -466,6 +692,14 @@ def process_packet(packet):
             "last_seen": now,
 
             "last_seen_unix": now_unix,
+
+            #
+            # DNS Correlation
+            #
+
+            "src_domain": src_domain,
+
+            "dst_domain": dst_domain,
 
             #
             # Internal / External Classification
@@ -562,4 +796,3 @@ except KeyboardInterrupt:
     db.close()
 
     print("Done.")
-    

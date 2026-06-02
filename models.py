@@ -98,6 +98,10 @@ class Flow(Base):
 
     last_seen = Column(DateTime)
 
+    src_domain = Column(String)
+
+    dst_domain = Column(String)
+
     src_is_internal = Column(
         Boolean,
         default=False
@@ -123,3 +127,41 @@ class Flow(Base):
     dst_country = Column(String)
 
     dst_rdns = Column(String)
+
+
+class DNSRecord(Base):
+
+    __tablename__ = "dns_records"
+
+    id = Column(
+        Integer,
+        primary_key=True
+    )
+
+    domain = Column(
+        String,
+        index=True
+    )
+
+    ip = Column(
+        String,
+        index=True
+    )
+
+    record_type = Column(
+        String
+    )
+
+    ttl = Column(
+        Integer
+    )
+
+    first_seen = Column(
+        DateTime,
+        default=lambda: datetime.now(UTC)
+    )
+
+    last_seen = Column(
+        DateTime,
+        default=lambda: datetime.now(UTC)
+    )
